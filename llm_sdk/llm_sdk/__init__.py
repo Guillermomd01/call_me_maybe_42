@@ -77,7 +77,7 @@ class Small_LLM_Model:
     def encode(self, text: str) -> torch.Tensor:
         """Tokenise *text* and return a 2-D ``input_ids`` tensor on the target device."""
         ids = self._tokenizer.encode(text, add_special_tokens=False)
-        return torch.tensor([ids], device=self._device, dtype=torch.long)
+        return ids
 
 
     def decode(self, ids: torch.Tensor | list[int]) -> str:
