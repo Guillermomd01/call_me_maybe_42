@@ -1,0 +1,58 @@
+[
+    {
+        "prompt": "What is the square root of 16?",
+        "fn_name": "fn_get_square_root",
+        "args": {
+            "a": 16
+        }
+    },
+    {
+        "prompt": "What is the sum of 2 and 3?",
+        "fn_name": "fn_is_even",
+        "args": {
+            "n": 2
+        }
+    },
+    {
+        "prompt": "What is the sum of 265 and 345?",
+        "fn_name": "fn_is_even",
+        "args": {
+            "n": 265
+        }
+    },
+    {
+        "prompt": "Is 4 an even number?",
+        "fn_name": "fn_is_even",
+        "args": {
+            "n": 4
+        }
+    },
+    {
+        "prompt": "Is 7 an even number?",
+        "fn_name": "fn_is_even",
+        "args": {
+            "n": 7
+        }
+    },
+    {
+        "prompt": "What is the product of 3 and 5?",
+        "fn_name": "fn_is_even",
+        "args": {
+            "n": 3
+        }
+    },
+    {
+        "prompt": "What is the product of 12 and 4?",
+        "fn_name": "fn_is_even",
+        "args": {
+            "n": 12
+        }
+    },
+    {
+        "prompt": "Replace all vowels in 'Programming is fun' with asterisks",
+        "fn_name": "fn_is_even",
+        "args": {
+            "n": 2
+        }
+    }
+]
