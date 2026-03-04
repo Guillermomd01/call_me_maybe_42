@@ -107,7 +107,6 @@ class FunctionPicker():
             if next_token_str.strip() == "" or "\n" in next_token_str:
                 break
             generated_name += next_token_str
-            inputs_ids.append(int(next_token_id))
         name = generated_name.strip().replace('"','').replace("'","")
         for fn_name in self.list_functions:
             if fn_name.lower() in name.lower() or name.lower() in fn_name.lower():
@@ -122,10 +121,11 @@ class JsonGenerator():
     harcodeando la parte de la clave que siempre es igual
     y el valor recorriendo segun las listas que tenemos de vocab
     """
-    def __init__(self, schema: FunctionSchema, model: llm, vocab: VocabManager):
+    def __init__(self, schema: FunctionSchema, model: llm, vocab: VocabManager, user_query: str = ""):
         self.schemas = schema
         self.vocab = vocab
         self.model = model
+        self.user_query = user_query
         self.current_args = 0
         self.state = "Start"
         self.sequence_to_force = []
@@ -203,11 +203,12 @@ class JsonGenerator():
 
         # SI LA SECUENCIA TERMINÓ, CAMBIAMOS DE ESTADO Y CARGAMOS LA SIGUIENTE
         if self.state == "Start":
-            self.state = "Prompt_value"
-            # Pre-tokenizamos la apertura del JSON
-            self.sequence_to_force = self.model.encode(
-                '{"prompt": "')
-            self.ptr = 1  # Ya devolvemos el primer token ahora
+            self.state = "Fn_Name_key"
+            safe_query = self.user_query.replace('"', '\\"')
+            # Pre-tokenizamos TODO el primer bloque del JSON de golpe
+            text_to_force = f'{{"prompt": "{safe_query}"'
+            self.sequence_to_force = self.model.encode(text_to_force)
+            self.ptr = 1 
             return [self.sequence_to_force[0]]
         elif self.state == "Prompt_value":
             # Aquí no hay puntero, el modelo tiene libertad
