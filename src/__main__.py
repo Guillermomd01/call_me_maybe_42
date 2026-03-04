@@ -65,17 +65,17 @@ def main():
                 if json_end != -1:
                     clean_json_str = clean_json_str[:json_end+1]
                 
-                # --- MAGIA ANTIFALLOS PARA STRINGS SIN CERRAR ---
-                # Si el LLM se olvidó de poner la comilla de cierre y hay un número impar de comillas
-                if clean_json_str.count('"') % 2 != 0:
-                    last_brace = clean_json_str.rfind('}')
-                    if last_brace != -1:
-                        # Inyectamos la comilla justo antes de que se cierre el diccionario
-                        clean_json_str = clean_json_str[:last_brace] + '"' + clean_json_str[last_brace:]
+                # Limpieza de seguridad básica
+                clean_json_str = clean_json_str.rstrip('}\n ,')
                 
-                # Limpiamos dobles comas o comas pegadas a llaves
-                clean_json_str = re.sub(r',\s*}', '}', clean_json_str)
-                clean_json_str = re.sub(r',\s*,', ',', clean_json_str)
+                if clean_json_str.count('"') % 2 != 0:
+                    clean_json_str += '"'
+                    
+                clean_json_str += '}}'
+                
+                # Eliminamos dobles comas o comas antes de llaves que a veces añade el LLM
+                clean_json_str = re.sub(r',\s*\}', '}', clean_json_str)
+                clean_json_str = re.sub(r',\s*,+', ',', clean_json_str)
                 
                 generated_data = {}
                 try:
@@ -85,8 +85,8 @@ def main():
                         eval_str = clean_json_str.replace('true', 'True').replace('false', 'False').replace('null', 'None')
                         generated_data = ast.literal_eval(eval_str)
                     except Exception as e:
-                        print(f" Error irrecuperable al limpiar la respuesta: {e}")
-                        continue
+                        print(f"  [!] Fallo final de limpieza. String rebelde: {clean_json_str}")
+                        generated_data = {"args": {}}
                 
                 results.append({
                     "prompt": user_query,
@@ -95,7 +95,7 @@ def main():
                 })
 
         except Exception as e:
-            print(f" Error en test {i}: {e}")
+            print(f" Error general en test {i}: {e}")
 
     with open(args.output, "w") as out_f:
         json.dump(results, out_f, indent=4)

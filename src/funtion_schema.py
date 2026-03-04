@@ -72,7 +72,6 @@ class FunctionPicker():
             print("File don't exist")
 
     def get_function_name(self, user_query: str) -> FunctionSchema | None:
-        # 1. FEW-SHOT PROMPTING: Enseñamos al LLM con ejemplos genéricos
         prompt = f"""Task: Map the user query to the exact function name from the list.
 Functions: {self.list_functions}
 
@@ -95,31 +94,30 @@ Function: fn_"""
             token_str = self.model.decode([next_token_id])
             
             generated_name += token_str
-            # Cortamos si detecta salto de línea, espacio o el token de fin
-            if "\n" in token_str or " " in token_str or "<" in token_str:
+            # Permitimos espacios internos para que el modelo pueda expresarse sin cortarse de golpe
+            if "\n" in token_str or "<" in token_str:
                 break
                 
         generated_clean = generated_name.strip().lower()
         
-        # Búsqueda principal: comprobamos si el LLM acertó
         for fn_name in self.list_functions:
             if fn_name.lower() in generated_clean or generated_clean in fn_name.lower():
                 return self.functions_map[fn_name]
                 
-        # 2. FALLBACK DINÁMICO (Cero hardcodeo)
-        # Extraemos palabras de la query limpiando signos de puntuación
+        # FALLBACK INTELIGENTE (Sin stopwords y añadiendo sinónimos al diccionario dinámico)
         clean_query = user_query.lower().replace('?', '').replace('.', '').replace("'", '').replace('"', '')
-        query_words = set(clean_query.split())
+        stopwords = {"what", "is", "the", "of", "and", "a", "an", "to", "in", "with", "for", "on", "all"}
+        query_words = set(clean_query.split()) - stopwords
         
         best_match = None
         max_overlap = 0
         
-        # Descomponemos los nombres de las funciones dinámicamente
         for fn_name in self.list_functions:
-            # Ej: "fn_get_square_root" -> {"get", "square", "root"}
             fn_words = set(fn_name.lower().replace('fn_', '').split('_'))
+            if "add" in fn_words: fn_words.add("sum")
+            if "multiply" in fn_words: fn_words.add("product")
+            if "substitute" in fn_words: fn_words.add("replace")
             
-            # Calculamos la intersección matemática de palabras
             overlap = len(query_words.intersection(fn_words))
             
             if overlap > max_overlap:
@@ -144,20 +142,30 @@ class JsonGenerator():
         self.ptr = 0
 
     def update_state(self, last_token_id: int) -> None:
+        # Si todavía estamos forzando tokens nuestros, ignoramos el texto
         if self.ptr < len(self.sequence_to_force):
             return 
 
-        text = self.vocab.rvocabulary.get(last_token_id, "")
+        # Transiciones automáticas tras terminar una secuencia forzada
+        if self.state == "Start":
+            self.state = "Arg_Name"
+            return
+            
+        if self.state == "Arg_Name":
+            self.state = "Arg_Value"
+            return
 
+        # Aquí solo entramos si state == "Arg_Value", 
+        # lo que significa que estamos evaluando tokens REALES del LLM.
         if self.state == "Arg_Value":
+            text = self.vocab.rvocabulary.get(last_token_id, "")
             arg_name = self.schemas.args_names[self.current_args]
             arg_type = self.schemas.args_types.get(arg_name, "str")
 
             should_transition = False
 
-            # Si es string, transiciona tanto si pone comillas como si intenta cerrarlo con llaves
             if arg_type in ["str", "string"]:
-                if '"' in text or "}" in text or "," in text:
+                if '"' in text:
                     should_transition = True
             else:
                 if "," in text or "}" in text or " " in text or "\n" in text:
@@ -183,7 +191,6 @@ class JsonGenerator():
             return [next_token]
 
         if self.state == "Start":
-            self.state = "Arg_Name"
             safe_prompt = self.user_query.replace('"', '\\"')
             text_to_force = f'{{"prompt": "{safe_prompt}", "fn_name": "{self.schemas.fn_name}", "args": {{'
             self.sequence_to_force = self.model.encode(text_to_force)
@@ -200,7 +207,6 @@ class JsonGenerator():
                 
             self.sequence_to_force = self.model.encode(text_to_force)
             self.ptr = 1 
-            self.state = "Arg_Value"
             return [self.sequence_to_force[0]]
 
         elif self.state == "Arg_Value":
