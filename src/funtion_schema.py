@@ -41,7 +41,8 @@ class VocabManager():
         self.ids_str = []
         self.signals = [":", ",", '"', ' "', "{", "}"]
         for token, token_id in self.vocabulary.items():
-            self.ids_str.append(token_id) # Por defecto, casi todo es un string
+            if "\n" not in token and "Ċ" not in token and "\\n" not in token:
+                self.ids_str.append(token_id) # Por defecto, casi todo es un string
             
             if token.lower() in ["true", "false"]:
                 self.ids_booleans.append(token_id)
@@ -92,13 +93,11 @@ class FunctionPicker():
             print("File don't exist")
 
     def get_function_name(self, user_query: str) -> FunctionSchema | None:
-        prompt = f"""You are a expert function picker
-        Available Functions: {self.list_functions}.
-        User query: {user_query}
-        Return only the function name"""
+        prompt = f"Task: Select the correct function for the query.\n"
+        prompt += f"Query: {user_query}\nOptions: "
+        prompt += f"{self.list_functions}\nSelection: fn_"
         inputs_ids = self.model.encode(prompt)
-        generated_name = ""
-        max_new_token = 20
+        generated_name = "fn_"
         for _ in range(20):
             logits = self.model.get_logits_from_input_ids(inputs_ids)
             next_token_id = int(np.argmax(logits))
@@ -107,9 +106,10 @@ class FunctionPicker():
             if next_token_str.strip() == "" or "\n" in next_token_str:
                 break
             generated_name += next_token_str
-        name = generated_name.strip().replace('"','').replace("'","")
+            if not next_token_str or "\n" in next_token_str or " " in next_token_str:
+                break
         for fn_name in self.list_functions:
-            if fn_name.lower() in name.lower() or name.lower() in fn_name.lower():
+            if fn_name.lower() in generated_name.lower():
                 return self.functions_map[fn_name]
         return None
 

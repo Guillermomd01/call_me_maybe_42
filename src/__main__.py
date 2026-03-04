@@ -44,10 +44,12 @@ def main():
         try:
             schema = picker.get_function_name(user_query)
             if not schema:
+                print(f"  [!] No se pudo determinar la función. Saltando test...")
                 continue
 
             generator = JsonGenerator(schema, model, vocab, user_query)
-            token_history = model.encode(user_query)
+            prompt_context = f"Extract parameters to JSON.\nQuery: {user_query}\nJSON:\n"
+            token_history = model.encode(prompt_context)
 
             # Generación restringida
             for _ in range(512):
@@ -68,18 +70,23 @@ def main():
                 if json_end != -1:
                     clean_json_str = clean_json_str[:json_end+1]
                 
-                # --- NUEVO: Limpiar impurezas generadas por el LLM ---
-                import re
-                # 1. Eliminar comas antes de una llave de cierre (ej: {"name": "shrek",} -> {"name": "shrek"})
-                clean_json_str = re.sub(r',\s*}', '}', clean_json_str)
+                import ast
+                generated_data = {}
                 
-                # 2. Asegurar que termina exactamente con dos llaves de cierre }}
-                # (una cierra el diccionario de args y la otra el JSON principal)
-                clean_json_str = re.sub(r'}+\s*$', '}}', clean_json_str)
+                try:
+                    # Intento 1: Parseo estricto estándar
+                    generated_data = json.loads(clean_json_str)
+                except Exception:
+                    # Intento 2: Parseo permisivo nativo de Python (ignora comas finales)
+                    try:
+                        # Convertimos booleanos y null de JSON a sintaxis Python
+                        eval_str = clean_json_str.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+                        generated_data = ast.literal_eval(eval_str)
+                    except Exception as e:
+                        print(f" Error irrecuperable al limpiar la respuesta: {e}")
+                        continue
                 
                 # Formatear según el PDF: prompt, fn_name, args 
-                generated_data = json.loads(clean_json_str)
-                
                 results.append({
                     "prompt": user_query,
                     "fn_name": schema.fn_name,
