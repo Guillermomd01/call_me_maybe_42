@@ -99,9 +99,10 @@ class FunctionPicker():
         inputs_ids = self.model.encode(prompt)
         generated_name = ""
         max_new_token = 20
-        for _ in range(max_new_token):
+        for _ in range(20):
             logits = self.model.get_logits_from_input_ids(inputs_ids)
-            next_token_id = np.argmax(logits)
+            next_token_id = int(np.argmax(logits))
+            inputs_ids.append(next_token_id)
             next_token_str = self.model.decode([next_token_id])
             if next_token_str.strip() == "" or "\n" in next_token_str:
                 break
@@ -221,14 +222,17 @@ class JsonGenerator():
             self.ptr = 1
             return [self.sequence_to_force[0]]
         elif self.state == "Fn_Name_value":
-            # Aquí el modelo escribe el nombre de la función (ej: fn_add_numbers)
-            # Restringimos a los IDs que componen ese nombre específico
-            return self.vocab.get_ids_from_string(self.schemas.fn_name)
-        elif self.state == "Args_Open":
-            # Forzamos la transición: ", "arguments": {
-            self.sequence_to_force = self.model.encode('", "arguments": {')
+            # En lugar de solo permitir el token, forzamos el nombre + comilla de cierre
+            self.sequence_to_force = self.model.encode(self.schemas.fn_name + '"')
             self.ptr = 1
-            self.state = "Arg_Name" # Después de abrir, toca el primer nombre de argumento
+            self.state = "Args_Open" # Preparamos el siguiente salto
+            return [self.sequence_to_force[0]]
+
+        elif self.state == "Args_Open":
+            # Forzamos la transición exacta del PDF
+            self.sequence_to_force = self.model.encode(', "args": {') # El PDF pide "args", no "arguments"
+            self.ptr = 1
+            self.state = "Arg_Name"
             return [self.sequence_to_force[0]]
 
         elif self.state == "Arg_Name":
