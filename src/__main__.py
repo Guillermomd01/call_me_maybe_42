@@ -46,13 +46,13 @@ def main():
             if not schema:
                 continue
 
-            generator = JsonGenerator(schema, model, vocab)
-            token_history = model.encode(user_query) # Ahora es una lista [cite: 11]
+            generator = JsonGenerator(schema, model, vocab, user_query)
+            token_history = model.encode(user_query)
 
             # Generación restringida
             for _ in range(512):
                 next_token = generator.generate_step(model, token_history)
-                token_history.append(next_token) # Funciona porque es lista [cite: 9]
+                token_history.append(next_token)
 
                 if generator.state == "End" and generator.ptr >= len(generator.sequence_to_force):
                     break
