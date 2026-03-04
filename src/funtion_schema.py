@@ -2,7 +2,7 @@ from pydantic import BaseModel, model_validator
 import json
 from typing import Optional, List, Dict
 import numpy as np
-from llm_sdk import Small_LLM_Model as llm
+from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
 
 class FunctionSchema(BaseModel):
