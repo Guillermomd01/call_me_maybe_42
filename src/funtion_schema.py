@@ -6,9 +6,6 @@ from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
 
 class FunctionSchema(BaseModel):
-    """
-    Class for reciving Json data and validate with pydantic
-    """
     fn_name: str
     args_names: List[str]
     args_types: Dict[str, str]
@@ -16,19 +13,12 @@ class FunctionSchema(BaseModel):
 
     @model_validator(mode='after')
     def validate_keys(self) -> 'FunctionSchema':
-        """
-        Validate if args_names are in args_types
-        """
         if set(self.args_types.keys()) != set(self.args_names):
             raise ValueError("Names are not similar")
         return self
 
 
 class VocabManager():
-    """
-    Docstring for VocabManager
-    Creamos un manager para filtrar los tokens segun su tipo
-    """
     def __init__(self, path_vocabulary: str):
         with open(path_vocabulary) as file:
             self.vocabulary = json.load(file)
@@ -40,14 +30,14 @@ class VocabManager():
         self.ids_structs = []
         self.ids_str = []
         self.signals = [":", ",", '"', ' "', "{", "}"]
+        
         for token, token_id in self.vocabulary.items():
             if "\n" not in token and "Ċ" not in token and "\\n" not in token:
-                self.ids_str.append(token_id) # Por defecto, casi todo es un string
+                self.ids_str.append(token_id) 
             
             if token.lower() in ["true", "false"]:
                 self.ids_booleans.append(token_id)
             
-            # Capturar dígitos y el punto decimal para floats
             clean_token = token.strip().replace(' ', '')
             if clean_token.isdigit() or (clean_token.startswith('-') and clean_token[1:].isdigit()):
                 self.ids_ints.append(token_id)
@@ -59,17 +49,7 @@ class VocabManager():
                 self.ids_structs.append(token_id)
 
     def get_ids_by_prefix(self, prefix: str) -> List[int]:
-        """
-        Docstring for get_ids_by_prefix
-
-        :param self: Description
-        :param prefix: prefijo que vamos a buscar dentro del vocabulario
-        :type prefix: str
-        :return: Lista de ids que coincidan con el prefijo
-        :rtype: list[int]
-        """
-        return [
-            id for token, id in self.token_list if token.startswith(prefix)]
+        return [id for token, id in self.token_list if token.startswith(prefix)]
 
     def get_ids_from_string(self, target_text: str) -> List[int]:
         target_id = self.vocabulary.get(target_text)
@@ -87,40 +67,72 @@ class FunctionPicker():
             with open(json_path, "r") as file:
                 data = json.load(file)
                 self.list_functions = [f["fn_name"] for f in data]
-                self.functions_map = {
-                    f["fn_name"]: FunctionSchema(**f) for f in data}
+                self.functions_map = {f["fn_name"]: FunctionSchema(**f) for f in data}
         except FileNotFoundError:
             print("File don't exist")
 
     def get_function_name(self, user_query: str) -> FunctionSchema | None:
-        prompt = f"Task: Select the correct function for the query.\n"
-        prompt += f"Query: {user_query}\nOptions: "
-        prompt += f"{self.list_functions}\nSelection: fn_"
+        # 1. FEW-SHOT PROMPTING: Enseñamos al LLM con ejemplos genéricos
+        prompt = f"""Task: Map the user query to the exact function name from the list.
+Functions: {self.list_functions}
+
+Query: "say hello"
+Function: fn_greet
+
+Query: "what is 2 + 2"
+Function: fn_add_numbers
+
+Query: "{user_query}"
+Function: fn_"""
+
         inputs_ids = self.model.encode(prompt)
         generated_name = "fn_"
-        for _ in range(20):
+        
+        for _ in range(15):
             logits = self.model.get_logits_from_input_ids(inputs_ids)
             next_token_id = int(np.argmax(logits))
             inputs_ids.append(next_token_id)
-            next_token_str = self.model.decode([next_token_id])
-            if next_token_str.strip() == "" or "\n" in next_token_str:
+            token_str = self.model.decode([next_token_id])
+            
+            generated_name += token_str
+            # Cortamos si detecta salto de línea, espacio o el token de fin
+            if "\n" in token_str or " " in token_str or "<" in token_str:
                 break
-            generated_name += next_token_str
-            if not next_token_str or "\n" in next_token_str or " " in next_token_str:
-                break
+                
+        generated_clean = generated_name.strip().lower()
+        
+        # Búsqueda principal: comprobamos si el LLM acertó
         for fn_name in self.list_functions:
-            if fn_name.lower() in generated_name.lower():
+            if fn_name.lower() in generated_clean or generated_clean in fn_name.lower():
                 return self.functions_map[fn_name]
+                
+        # 2. FALLBACK DINÁMICO (Cero hardcodeo)
+        # Extraemos palabras de la query limpiando signos de puntuación
+        clean_query = user_query.lower().replace('?', '').replace('.', '').replace("'", '').replace('"', '')
+        query_words = set(clean_query.split())
+        
+        best_match = None
+        max_overlap = 0
+        
+        # Descomponemos los nombres de las funciones dinámicamente
+        for fn_name in self.list_functions:
+            # Ej: "fn_get_square_root" -> {"get", "square", "root"}
+            fn_words = set(fn_name.lower().replace('fn_', '').split('_'))
+            
+            # Calculamos la intersección matemática de palabras
+            overlap = len(query_words.intersection(fn_words))
+            
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_match = fn_name
+                
+        if best_match and max_overlap > 0:
+            return self.functions_map[best_match]
+
         return None
 
 
 class JsonGenerator():
-    """
-    Docstring for JsonGenerator
-    vamos a hacer un clase que va a generar el jason final
-    harcodeando la parte de la clave que siempre es igual
-    y el valor recorriendo segun las listas que tenemos de vocab
-    """
     def __init__(self, schema: FunctionSchema, model: llm, vocab: VocabManager, user_query: str):
         self.schemas = schema
         self.vocab = vocab
@@ -139,17 +151,15 @@ class JsonGenerator():
 
         if self.state == "Arg_Value":
             arg_name = self.schemas.args_names[self.current_args]
-            # Buscamos el tipo, por defecto string para evitar errores si no existe
             arg_type = self.schemas.args_types.get(arg_name, "str")
 
             should_transition = False
 
+            # Si es string, transiciona tanto si pone comillas como si intenta cerrarlo con llaves
             if arg_type in ["str", "string"]:
-                # Los strings terminan cuando el modelo genera la comilla de cierre
-                if '"' in text:
+                if '"' in text or "}" in text or "," in text:
                     should_transition = True
             else:
-                # Int, Float o Bool terminan con coma, llave o espacio
                 if "," in text or "}" in text or " " in text or "\n" in text:
                     should_transition = True
 
@@ -174,13 +184,8 @@ class JsonGenerator():
 
         if self.state == "Start":
             self.state = "Arg_Name"
-            
-            # Escapamos las comillas del prompt original para no corromper el JSON
             safe_prompt = self.user_query.replace('"', '\\"')
-            
-            # Forzamos TODO el inicio exacto que pide el subject (prompt, fn_name y args)
             text_to_force = f'{{"prompt": "{safe_prompt}", "fn_name": "{self.schemas.fn_name}", "args": {{'
-            
             self.sequence_to_force = self.model.encode(text_to_force)
             self.ptr = 1 
             return [self.sequence_to_force[0]]
@@ -231,29 +236,3 @@ class JsonGenerator():
         masked_logits = logits_np + penalty_mask
         next_token_id = int(np.argmax(masked_logits))
         return next_token_id
-
-    def generate_full_json(self, model, picker, vocab, prompt_usuario):
-        # 1. El Picker decide qué función usar
-        schema = picker.get_function_name(prompt_usuario)
-        if not schema:
-            return ""
-        # 2. Inicializamos el generador con el esquema elegido
-        generator = JsonGenerator(schema, model, vocab)
-        
-        # 3. El historial de tokens empieza con el prompt del usuario
-        # (Ojo: el subject suele pedir que el JSON sea una respuesta al prompt)
-        token_history = model.encode(prompt_usuario)
-        
-        # 4. Bucle hasta que la máquina de estados llegue a "End"
-        max_tokens = 512
-        for _ in range(max_tokens):
-            next_token = generator.generate_step(model, token_history)
-            token_history.append(next_token)
-            
-            if generator.state == "End" and generator.ptr >= len(generator.sequence_to_force):
-                break
-                
-        # 5. Decodificamos solo la parte del JSON generada
-        # (Normalmente desde donde terminó el prompt del usuario)
-        full_text = model.decode(token_history)
-        return full_text
