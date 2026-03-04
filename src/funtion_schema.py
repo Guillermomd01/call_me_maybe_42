@@ -121,58 +121,39 @@ class JsonGenerator():
     harcodeando la parte de la clave que siempre es igual
     y el valor recorriendo segun las listas que tenemos de vocab
     """
-    def __init__(self, schema: FunctionSchema, model: llm, vocab: VocabManager, user_query: str = ""):
+    def __init__(self, schema: FunctionSchema, model: llm, vocab: VocabManager, user_query: str):
         self.schemas = schema
         self.vocab = vocab
         self.model = model
-        self.user_query = user_query
+        self.user_query = user_query 
         self.current_args = 0
         self.state = "Start"
         self.sequence_to_force = []
         self.ptr = 0
 
     def update_state(self, last_token_id: int) -> None:
-        # Si estamos siguiendo una secuencia forzada, no cambiamos de estado 
-        # hasta que el puntero llegue al final.
         if self.ptr < len(self.sequence_to_force):
             return 
 
-        text = self.vocab.rvocabulary.get(last_token_id)
-        
-        # --- CASO 1: Estamos escribiendo el valor del PROMPT ---
-        if self.state == "Prompt_value":
-            if '"' in text:
-                self.state = "Fn_Name_key"
-                self.ptr = 0
-                self.sequence_to_force = []
+        text = self.vocab.rvocabulary.get(last_token_id, "")
 
-        # --- CASO 2: Estamos escribiendo el NOMBRE de la FUNCIÓN ---
-        elif self.state == "Fn_Name_value":
-            if '"' in text:
-                self.state = "Args_Open"
-                self.ptr = 0
-                self.sequence_to_force = []
-
-        # --- CASO 3: Estamos escribiendo el VALOR de un ARGUMENTO ---
-        elif self.state == "Arg_Value":
+        if self.state == "Arg_Value":
             arg_name = self.schemas.args_names[self.current_args]
-            arg_type = self.schemas.args_types[arg_name]
+            # Buscamos el tipo, por defecto string para evitar errores si no existe
+            arg_type = self.schemas.args_types.get(arg_name, "str")
 
             should_transition = False
 
-            if arg_type == "str":
+            if arg_type in ["str", "string"]:
                 # Los strings terminan cuando el modelo genera la comilla de cierre
                 if '"' in text:
                     should_transition = True
             else:
-                # Int, Float o Bool NO llevan comillas en el JSON.
-                # Terminan cuando el modelo genera algo que no es parte del valor
-                # (como una coma para el siguiente arg o una llave para cerrar).
-                if "," in text or "}" in text or " " in text:
+                # Int, Float o Bool terminan con coma, llave o espacio
+                if "," in text or "}" in text or " " in text or "\n" in text:
                     should_transition = True
 
             if should_transition:
-                # ¿Quedan más argumentos por rellenar?
                 if self.current_args < len(self.schemas.args_names) - 1:
                     self.current_args += 1
                     self.state = "Arg_Name"
@@ -183,116 +164,72 @@ class JsonGenerator():
                 self.sequence_to_force = []
 
     def get_next_mask(self, last_token_id: Optional[int] = None) -> Optional[List[int]]:
-        """
-        Docstring for get_next_mask
-
-        :param self: Description
-        :param last_token_id: Description
-        :type last_token_id: Optional[int]
-        :return: Description
-        :rtype: Any
-        """
         if last_token_id is not None:
             self.update_state(last_token_id)
         
-        # SI HAY UNA SECUENCIA FORZADA EN CURSO:
         if self.ptr < len(self.sequence_to_force):
             next_token = self.sequence_to_force[self.ptr]
             self.ptr += 1
-            return [next_token]  # Solo permitimos el token que dice el puntero
+            return [next_token]
 
-        # SI LA SECUENCIA TERMINÓ, CAMBIAMOS DE ESTADO Y CARGAMOS LA SIGUIENTE
         if self.state == "Start":
-            self.state = "Fn_Name_key"
-            safe_query = self.user_query.replace('"', '\\"')
-            # Pre-tokenizamos TODO el primer bloque del JSON de golpe
-            text_to_force = f'{{"prompt": "{safe_query}"'
+            self.state = "Arg_Name"
+            
+            # Escapamos las comillas del prompt original para no corromper el JSON
+            safe_prompt = self.user_query.replace('"', '\\"')
+            
+            # Forzamos TODO el inicio exacto que pide el subject (prompt, fn_name y args)
+            text_to_force = f'{{"prompt": "{safe_prompt}", "fn_name": "{self.schemas.fn_name}", "args": {{'
+            
             self.sequence_to_force = self.model.encode(text_to_force)
             self.ptr = 1 
-            return [self.sequence_to_force[0]]
-        elif self.state == "Prompt_value":
-            # Aquí no hay puntero, el modelo tiene libertad
-            # (pero restringida a strings)
-            return self.vocab.ids_str
-
-        elif self.state == "Fn_Name_key":
-            self.state = "Fn_Name_value"
-            # Pre-tokenizamos el salto a la función
-            self.sequence_to_force = self.model.encode(
-                '", "function": "')
-            self.ptr = 1
-            return [self.sequence_to_force[0]]
-        elif self.state == "Fn_Name_value":
-            # En lugar de solo permitir el token, forzamos el nombre + comilla de cierre
-            self.sequence_to_force = self.model.encode(self.schemas.fn_name + '"')
-            self.ptr = 1
-            self.state = "Args_Open" # Preparamos el siguiente salto
-            return [self.sequence_to_force[0]]
-
-        elif self.state == "Args_Open":
-            # Forzamos la transición exacta del PDF
-            self.sequence_to_force = self.model.encode(', "args": {') # El PDF pide "args", no "arguments"
-            self.ptr = 1
-            self.state = "Arg_Name"
             return [self.sequence_to_force[0]]
 
         elif self.state == "Arg_Name":
             arg_name = self.schemas.args_names[self.current_args]
-            # Construimos la parte fija que toca escribir ahora
             prefix = ", " if self.current_args > 0 else ""
-            text_to_force = f'{prefix}"{arg_name}": "'
+            text_to_force = f'{prefix}"{arg_name}": '
             
-            # Convertimos a IDs y preparamos el puntero
-            self.sequence_to_force = self.model.encode(
-                text_to_force)
-            self.ptr = 1 # El primer token lo devolvemos ya
-            self.state = "Arg_Value"  # Siguiente estado después de la secuencia
+            if self.schemas.args_types.get(arg_name) in ["str", "string"]:
+                text_to_force += '"'
+                
+            self.sequence_to_force = self.model.encode(text_to_force)
+            self.ptr = 1 
+            self.state = "Arg_Value"
             return [self.sequence_to_force[0]]
 
         elif self.state == "Arg_Value":
-            # 1. Identificamos el nombre y el tipo del argumento actual
             arg_name = self.schemas.args_names[self.current_args]
-            arg_type = self.schemas.args_types[arg_name]
+            arg_type = self.schemas.args_types.get(arg_name, "str")
 
-            # 2. Devolvemos los IDs permitidos según el tipo
-            if arg_type == "int":
-                return self.vocab.ids_ints
-            elif arg_type == "float":
-                # Asegúrate de tener ids_float en tu VocabManager
-                return self.vocab.ids_float 
-            elif arg_type == "bool":
-                return self.vocab.ids_booleans
-            else: # Por defecto tratamos como string
-                return self.vocab.ids_str
+            if arg_type in ["int", "integer"]:
+                return self.vocab.ids_ints + self.vocab.ids_structs
+            elif arg_type in ["float", "number"]:
+                return self.vocab.ids_float + self.vocab.ids_structs
+            elif arg_type in ["bool", "boolean"]:
+                return self.vocab.ids_booleans + self.vocab.ids_structs
+            else: 
+                return self.vocab.ids_str + self.vocab.ids_structs
 
         elif self.state == "End":
             self.sequence_to_force = self.model.encode('}}')
             self.ptr = 1
             return [self.sequence_to_force[0]]
+            
+        return None
 
     def generate_step(self, model, token_history):
-        # 1. Obtenemos los logits brutos del modelo
         raw_logits = model.get_logits_from_input_ids(token_history)
         logits_np = np.array(raw_logits)
-
-        # 2. Obtenemos la lista de tokens permitidos por la máquina de estados
-        # Usamos el último token generado para actualizar el estado
         last_token = token_history[-1] if token_history else None
         allowed_ids = self.get_next_mask(last_token)
 
-        # 3. Aplicamos la máscara (Logit Processing)
-        # Ponemos todo a -infinito
         penalty_mask = np.full(len(logits_np), -float('inf'))
-        
-        # Solo los permitidos vuelven a tener su probabilidad original (0.0 de penalización)
         if allowed_ids:
             penalty_mask[allowed_ids] = 0.0
         
         masked_logits = logits_np + penalty_mask
-
-        # 4. Elegimos el mejor token entre los permitidos
         next_token_id = int(np.argmax(masked_logits))
-        
         return next_token_id
 
     def generate_full_json(self, model, picker, vocab, prompt_usuario):

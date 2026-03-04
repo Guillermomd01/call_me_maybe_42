@@ -60,15 +60,31 @@ def main():
             # Decodificación y limpieza
             full_output = model.decode(token_history)
             json_start = full_output.find('{')
-            clean_json_str = full_output[json_start:]
-            
-            # Formatear según el PDF: prompt, fn_name, args 
-            generated_data = json.loads(clean_json_str)
-            results.append({
-                "prompt": user_query,
-                "fn_name": schema.fn_name,
-                "args": generated_data.get("arg", {})
-            })
+            if json_start != -1:
+                clean_json_str = full_output[json_start:]
+                
+                # Cortar todo lo que esté después de la última llave de cierre
+                json_end = clean_json_str.rfind('}')
+                if json_end != -1:
+                    clean_json_str = clean_json_str[:json_end+1]
+                
+                # --- NUEVO: Limpiar impurezas generadas por el LLM ---
+                import re
+                # 1. Eliminar comas antes de una llave de cierre (ej: {"name": "shrek",} -> {"name": "shrek"})
+                clean_json_str = re.sub(r',\s*}', '}', clean_json_str)
+                
+                # 2. Asegurar que termina exactamente con dos llaves de cierre }}
+                # (una cierra el diccionario de args y la otra el JSON principal)
+                clean_json_str = re.sub(r'}+\s*$', '}}', clean_json_str)
+                
+                # Formatear según el PDF: prompt, fn_name, args 
+                generated_data = json.loads(clean_json_str)
+                
+                results.append({
+                    "prompt": user_query,
+                    "fn_name": schema.fn_name,
+                    "args": generated_data.get("args", {}) 
+                })
 
         except Exception as e:
             print(f" Error en test {i}: {e}")
