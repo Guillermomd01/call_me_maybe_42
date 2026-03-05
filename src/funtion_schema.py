@@ -140,30 +140,16 @@ class JsonGenerator():
         self.state = "Start"
         self.sequence_to_force = []
         self.ptr = 0
+        self.is_llm_token = False  # <-- NUEVO: Control absoluto sobre quién escribe
 
-    def update_state(self, last_token_id: int) -> None:
-        # Si todavía estamos forzando tokens nuestros, ignoramos el texto
-        if self.ptr < len(self.sequence_to_force):
-            return 
-
-        # Transiciones automáticas tras terminar una secuencia forzada
-        if self.state == "Start":
-            self.state = "Arg_Name"
-            return
-            
-        if self.state == "Arg_Name":
-            self.state = "Arg_Value"
-            return
-
-        # Aquí solo entramos si state == "Arg_Value", 
-        # lo que significa que estamos evaluando tokens REALES del LLM.
-        if self.state == "Arg_Value":
+    def get_next_mask(self, last_token_id: Optional[int] = None) -> Optional[List[int]]:
+        # 1. Actualizar el estado SOLO si el token anterior fue generado por el LLM libremente
+        if self.is_llm_token and last_token_id is not None:
             text = self.vocab.rvocabulary.get(last_token_id, "")
             arg_name = self.schemas.args_names[self.current_args]
             arg_type = self.schemas.args_types.get(arg_name, "str")
 
             should_transition = False
-
             if arg_type in ["str", "string"]:
                 if '"' in text:
                     should_transition = True
@@ -177,39 +163,51 @@ class JsonGenerator():
                     self.state = "Arg_Name"
                 else:
                     self.state = "End"
-                
                 self.ptr = 0
                 self.sequence_to_force = []
+                self.is_llm_token = False
 
-    def get_next_mask(self, last_token_id: Optional[int] = None) -> Optional[List[int]]:
-        if last_token_id is not None:
-            self.update_state(last_token_id)
-        
+        # 2. Inicializar la secuencia que debemos forzar según el estado actual
+        if self.ptr >= len(self.sequence_to_force):
+            if self.state == "Start":
+                safe_prompt = self.user_query.replace('"', '\\"')
+                text_to_force = f'{{"prompt": "{safe_prompt}", "fn_name": "{self.schemas.fn_name}", "args": {{'
+                self.sequence_to_force = self.model.encode(text_to_force)
+                self.ptr = 0
+            elif self.state == "Arg_Name":
+                arg_name = self.schemas.args_names[self.current_args]
+                prefix = ", " if self.current_args > 0 else ""
+                text_to_force = f'{prefix}"{arg_name}": '
+                if self.schemas.args_types.get(arg_name) in ["str", "string"]:
+                    text_to_force += '"'
+                self.sequence_to_force = self.model.encode(text_to_force)
+                self.ptr = 0
+            elif self.state == "End":
+                self.sequence_to_force = self.model.encode('}}')
+                self.ptr = 0
+
+        # 3. Emitir los tokens que estamos forzando (sin dejar al LLM pensar)
         if self.ptr < len(self.sequence_to_force):
             next_token = self.sequence_to_force[self.ptr]
             self.ptr += 1
+            self.is_llm_token = False
+            
+            # Si acabamos de emitir el ÚLTIMO token de nuestra secuencia, preparamos la transición
+            if self.ptr >= len(self.sequence_to_force):
+                if self.state == "Start":
+                    # Salvaguarda por si hubiera alguna función sin argumentos
+                    if len(self.schemas.args_names) > 0:
+                        self.state = "Arg_Name"
+                    else:
+                        self.state = "End"
+                elif self.state == "Arg_Name":
+                    self.state = "Arg_Value"
+                    
             return [next_token]
 
-        if self.state == "Start":
-            safe_prompt = self.user_query.replace('"', '\\"')
-            text_to_force = f'{{"prompt": "{safe_prompt}", "fn_name": "{self.schemas.fn_name}", "args": {{'
-            self.sequence_to_force = self.model.encode(text_to_force)
-            self.ptr = 1 
-            return [self.sequence_to_force[0]]
-
-        elif self.state == "Arg_Name":
-            arg_name = self.schemas.args_names[self.current_args]
-            prefix = ", " if self.current_args > 0 else ""
-            text_to_force = f'{prefix}"{arg_name}": '
-            
-            if self.schemas.args_types.get(arg_name) in ["str", "string"]:
-                text_to_force += '"'
-                
-            self.sequence_to_force = self.model.encode(text_to_force)
-            self.ptr = 1 
-            return [self.sequence_to_force[0]]
-
-        elif self.state == "Arg_Value":
+        # 4. Si no estamos forzando nada, dejamos que el LLM genere con su vocabulario permitido
+        self.is_llm_token = True
+        if self.state == "Arg_Value":
             arg_name = self.schemas.args_names[self.current_args]
             arg_type = self.schemas.args_types.get(arg_name, "str")
 
@@ -222,11 +220,6 @@ class JsonGenerator():
             else: 
                 return self.vocab.ids_str + self.vocab.ids_structs
 
-        elif self.state == "End":
-            self.sequence_to_force = self.model.encode('}}')
-            self.ptr = 1
-            return [self.sequence_to_force[0]]
-            
         return None
 
     def generate_step(self, model, token_history):
