@@ -1,23 +1,46 @@
-.PHONY: install run debug clean lint lint-strict
+SRC = src
+VENV = .venv
+VENV_FILE = $(VENV)/.pyinstall.timestamp
+UV_FILES = pyproject.toml uv.lock
+UV_RUN = uv run python3 -m
 
-install:
+all: install run
+
+install: $(VENV_FILE)
+
+$(VENV_FILE): $(UV_FILES)
+	@echo "Installing..."
 	uv sync
+	@touch $(VENV_FILE)
 
-run:
-	uv run python -m src
+run: install
+	@echo "Running..."
+	$(UV_RUN) $(SRC)
 
-debug:
-	uv run python -m pdb -m src
+debug: install
+	@echo "debugging..."
+	$(UV_RUN) pdb -m $(SRC)
+
+lint: install
+	@echo "Linting..."
+	@echo "Flake8: "
+	$(UV_RUN) flake8 src
+	@echo "Mypy: "
+	$(UV_RUN) mypy src --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs
+
+lint-strict: install
+	@echo "Linting strictly..."
+	@echo "Flake8: "
+	$(UV_RUN) flake8 src
+	@echo "Mypy: "
+	$(UV_RUN) mypy src --strict
 
 clean:
-	rm -rf __pycache__ .mypy_cache .pytest_cache
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete
+	@echo "Cleaning temporary files..."
+	@find . -type d -name "__pycache__" -exec rm -rf {} +
+	@rm -rf output/
+	@rm -rf .mypy_cache
+	@rm -rf .pytest_cache
+	@rm -rf $(VENV)
 
-lint:
-	uv run flake8 .
-	uv run mypy . --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs
-
-lint-strict:
-	uv run flake8 .
-	uv run mypy . --strict
+.PHONY: all run clean lint lint-strict debug install
