@@ -1,9 +1,6 @@
 import json
 import os
 import argparse
-import numpy as np
-import re
-import ast
 from .funtion_schema import VocabManager, FunctionPicker, JsonGenerator
 from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
@@ -44,55 +41,15 @@ def main():
                 print(f"  [!] No se pudo determinar la función. Saltando test...")
                 continue
 
+            # Usamos el nuevo generador basado en Logit Masking
             generator = JsonGenerator(schema, model, vocab, user_query)
-            prompt_context = f"Extract parameters to JSON.\nQuery: {user_query}\nJSON:\n"
-            token_history = model.encode(prompt_context)
-
-            for _ in range(512):
-                next_token = generator.generate_step(model, token_history)
-                token_history.append(next_token)
-
-                if generator.state == "End" and generator.ptr >= len(generator.sequence_to_force):
-                    break
-
-            full_output = model.decode(token_history)
-            json_start = full_output.find('{')
+            extracted_args = generator.extract_arguments()
             
-            if json_start != -1:
-                clean_json_str = full_output[json_start:]
-                
-                json_end = clean_json_str.rfind('}')
-                if json_end != -1:
-                    clean_json_str = clean_json_str[:json_end+1]
-                
-                # Limpieza de seguridad básica
-                clean_json_str = clean_json_str.rstrip('}\n ,')
-                
-                if clean_json_str.count('"') % 2 != 0:
-                    clean_json_str += '"'
-                    
-                clean_json_str += '}}'
-                
-                # Eliminamos dobles comas o comas antes de llaves que a veces añade el LLM
-                clean_json_str = re.sub(r',\s*\}', '}', clean_json_str)
-                clean_json_str = re.sub(r',\s*,+', ',', clean_json_str)
-                
-                generated_data = {}
-                try:
-                    generated_data = json.loads(clean_json_str)
-                except Exception:
-                    try:
-                        eval_str = clean_json_str.replace('true', 'True').replace('false', 'False').replace('null', 'None')
-                        generated_data = ast.literal_eval(eval_str)
-                    except Exception as e:
-                        print(f"  [!] Fallo final de limpieza. String rebelde: {clean_json_str}")
-                        generated_data = {"args": {}}
-                
-                results.append({
-                    "prompt": user_query,
-                    "fn_name": schema.fn_name,
-                    "args": generated_data.get("args", {}) 
-                })
+            results.append({
+                "prompt": user_query,
+                "fn_name": schema.fn_name,
+                "args": extracted_args 
+            })
 
         except Exception as e:
             print(f" Error general en test {i}: {e}")
