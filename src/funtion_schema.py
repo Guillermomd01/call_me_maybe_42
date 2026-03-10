@@ -132,106 +132,105 @@ Function: fn_"""
 
 class JsonGenerator():
     def __init__(self, schema: FunctionSchema, model: llm, vocab: VocabManager, user_query: str):
-        self.schemas = schema
-        self.vocab = vocab
+        self.schema = schema
         self.model = model
+        self.vocab = vocab
         self.user_query = user_query 
-        self.current_args = 0
-        self.state = "Start"
-        self.sequence_to_force = []
-        self.ptr = 0
-        self.is_llm_token = False  # <-- NUEVO: Control absoluto sobre quién escribe
 
-    def get_next_mask(self, last_token_id: Optional[int] = None) -> Optional[List[int]]:
-        # 1. Actualizar el estado SOLO si el token anterior fue generado por el LLM libremente
-        if self.is_llm_token and last_token_id is not None:
-            text = self.vocab.rvocabulary.get(last_token_id, "")
-            arg_name = self.schemas.args_names[self.current_args]
-            arg_type = self.schemas.args_types.get(arg_name, "str")
-
-            should_transition = False
-            if arg_type in ["str", "string"]:
-                if '"' in text:
-                    should_transition = True
-            else:
-                if "," in text or "}" in text or " " in text or "\n" in text:
-                    should_transition = True
-
-            if should_transition:
-                if self.current_args < len(self.schemas.args_names) - 1:
-                    self.current_args += 1
-                    self.state = "Arg_Name"
-                else:
-                    self.state = "End"
-                self.ptr = 0
-                self.sequence_to_force = []
-                self.is_llm_token = False
-
-        # 2. Inicializar la secuencia que debemos forzar según el estado actual
-        if self.ptr >= len(self.sequence_to_force):
-            if self.state == "Start":
-                safe_prompt = self.user_query.replace('"', '\\"')
-                text_to_force = f'{{"prompt": "{safe_prompt}", "fn_name": "{self.schemas.fn_name}", "args": {{'
-                self.sequence_to_force = self.model.encode(text_to_force)
-                self.ptr = 0
-            elif self.state == "Arg_Name":
-                arg_name = self.schemas.args_names[self.current_args]
-                prefix = ", " if self.current_args > 0 else ""
-                text_to_force = f'{prefix}"{arg_name}": '
-                if self.schemas.args_types.get(arg_name) in ["str", "string"]:
-                    text_to_force += '"'
-                self.sequence_to_force = self.model.encode(text_to_force)
-                self.ptr = 0
-            elif self.state == "End":
-                self.sequence_to_force = self.model.encode('}}')
-                self.ptr = 0
-
-        # 3. Emitir los tokens que estamos forzando (sin dejar al LLM pensar)
-        if self.ptr < len(self.sequence_to_force):
-            next_token = self.sequence_to_force[self.ptr]
-            self.ptr += 1
-            self.is_llm_token = False
-            
-            # Si acabamos de emitir el ÚLTIMO token de nuestra secuencia, preparamos la transición
-            if self.ptr >= len(self.sequence_to_force):
-                if self.state == "Start":
-                    # Salvaguarda por si hubiera alguna función sin argumentos
-                    if len(self.schemas.args_names) > 0:
-                        self.state = "Arg_Name"
-                    else:
-                        self.state = "End"
-                elif self.state == "Arg_Name":
-                    self.state = "Arg_Value"
-                    
-            return [next_token]
-
-        # 4. Si no estamos forzando nada, dejamos que el LLM genere con su vocabulario permitido
-        self.is_llm_token = True
-        if self.state == "Arg_Value":
-            arg_name = self.schemas.args_names[self.current_args]
-            arg_type = self.schemas.args_types.get(arg_name, "str")
-
-            if arg_type in ["int", "integer"]:
-                return self.vocab.ids_ints + self.vocab.ids_structs
-            elif arg_type in ["float", "number"]:
-                return self.vocab.ids_float + self.vocab.ids_structs
-            elif arg_type in ["bool", "boolean"]:
-                return self.vocab.ids_booleans + self.vocab.ids_structs
-            else: 
-                return self.vocab.ids_str + self.vocab.ids_structs
-
-        return None
-
-    def generate_step(self, model, token_history):
-        raw_logits = model.get_logits_from_input_ids(token_history)
-        logits_np = np.array(raw_logits)
-        last_token = token_history[-1] if token_history else None
-        allowed_ids = self.get_next_mask(last_token)
-
-        penalty_mask = np.full(len(logits_np), -float('inf'))
-        if allowed_ids:
-            penalty_mask[allowed_ids] = 0.0
+    def extract_arguments(self) -> dict:
+        """
+        Extrae los argumentos forzando la generación token a token usando Logit Masking.
+        Devuelve directamente un diccionario de Python válido.
+        """
+        # 1. Forzamos el contexto inicial
+        safe_query = self.user_query.replace('"', '\\"')
+        context = f'{{"prompt": "{safe_query}", "fn_name": "{self.schema.fn_name}", "args": {{'
         
-        masked_logits = logits_np + penalty_mask
-        next_token_id = int(np.argmax(masked_logits))
-        return next_token_id
+        # Extraemos la lista plana de tokens del tensor
+        tokens = self.model.encode(context)[0].tolist()
+        result = {}
+
+        # Pre-calculamos la lista del vocabulario para acceso rápido por índice
+        max_id = max(self.vocab.rvocabulary.keys())
+        vocab_list = [""] * (max_id + 1)
+        for token_id, token_str in self.vocab.rvocabulary.items():
+            vocab_list[token_id] = token_str
+
+        # 2. Iteramos por cada parámetro que requiera la función
+        for i, arg_name in enumerate(self.schema.args_names):
+            arg_type = self.schema.args_types.get(arg_name, "str")
+            
+            # Forzamos la escritura de la clave del JSON
+            prefix = f'"{arg_name}": ' if i == 0 else f', "{arg_name}": '
+            if arg_type in ["string", "str"]:
+                prefix += '"'
+            
+            tokens.extend(self.model.encode(prefix)[0].tolist())
+            
+            value_str = ""
+            max_tokens_per_arg = 20
+            tokens_generated = 0
+            
+            # 3. Bucle de generación bloqueando logits según el tipo
+            while tokens_generated < max_tokens_per_arg:
+                tokens_generated += 1
+                logits = np.array(self.model.get_logits_from_input_ids(tokens))
+                
+                # Enmascaramiento de logits (Logit Masking)
+                for token_id in range(len(vocab_list)):
+                    token_text = vocab_list[token_id].replace('Ġ', ' ')
+                    is_valid = True
+                    
+                    if arg_type in ["number", "float"]:
+                        is_valid = all(c in "-0123456789. " for c in token_text)
+                        if token_text.strip() in [",", "}"]: is_valid = True
+                            
+                    elif arg_type in ["integer", "int"]:
+                        is_valid = all(c in "-0123456789 " for c in token_text)
+                        if token_text.strip() in [",", "}"]: is_valid = True
+                            
+                    elif arg_type in ["boolean", "bool"]:
+                        # Permitimos las letras de true/false o los cierres
+                        is_valid = token_text.strip().lower() in ["true", "false", ",", "}"] or token_text.strip() == ""
+                        if any(w.startswith(token_text.strip().lower()) for w in ["true", "false"]):
+                            is_valid = True
+
+                    # Si el token no es válido para este tipo de dato, probabilidad 0 (log(0) = -inf)
+                    if not is_valid:
+                        logits[token_id] = float("-inf")
+                
+                # Seguridad por si el vocabulario del modelo es mayor que nuestra lista
+                for j in range(len(vocab_list), len(logits)):
+                    logits[j] = float("-inf")
+
+                # Elegimos el mejor token permitido y lo añadimos
+                new_token = int(np.argmax(logits))
+                tokens.append(new_token)
+                new_text = vocab_list[new_token].replace('Ġ', ' ')
+                
+                # 4. Condiciones de parada
+                if arg_type in ["string", "str"]:
+                    if '"' in new_text:
+                        value_str += new_text.split('"')[0]
+                        break
+                else:
+                    if "," in new_text or "}" in new_text:
+                        break
+                        
+                value_str += new_text
+            
+            # 5. Conversión segura (Casting)
+            clean_val = value_str.strip()
+            try:
+                if arg_type in ["number", "float"]:
+                    result[arg_name] = float(clean_val) if clean_val else 0.0
+                elif arg_type in ["integer", "int"]:
+                    result[arg_name] = int(clean_val) if clean_val else 0
+                elif arg_type in ["boolean", "bool"]:
+                    result[arg_name] = clean_val.lower() == "true"
+                else:
+                    result[arg_name] = clean_val
+            except ValueError:
+                result[arg_name] = None # Fallback seguro
+
+        return result
