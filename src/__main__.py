@@ -1,5 +1,6 @@
 import json
 import os
+from typing import List, Any, Dict
 from src.funtion_schema import VocabManager, FunctionPicker, JsonGenerator
 from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
@@ -15,43 +16,38 @@ def main() -> None:
 
     print("Loading model...")
     model = llm()
-    vocab_path = model.get_path_to_vocab_file()
-    vocab = VocabManager(vocab_path)
+    v_path = model.get_path_to_vocab_file()
+    vocab = VocabManager(v_path)
     picker = FunctionPicker(FUNCTIONS_DEF, model)
 
     try:
-        with open(INPUT_FILE, "r") as f:
+        with open(INPUT_FILE, "r", encoding="utf-8") as f:
             tests = json.load(f)
     except Exception as e:
         print(f"Error reading entry: {e}")
         return
 
-    results = []
-
+    results: List[Dict[str, Any]] = []
     for i, test in enumerate(tests):
         user_query = test["prompt"]
         print(f"[{i+1}/{len(tests)}] Processing: '{user_query}'")
-
         try:
             schema = picker.get_function_name(user_query)
             if not schema:
-                print("[!] Cannot determinate function"
-                      + ". Skipping test...")
                 continue
 
-            generator = JsonGenerator(schema, model, vocab, user_query)
-            extracted_args = generator.extract_arguments()
+            gen = JsonGenerator(schema, model, vocab, user_query)
+            args = gen.extract_arguments()
 
             results.append({
                 "prompt": user_query,
-                "fn_name": schema.fn_name,
-                "args": extracted_args
+                "name": schema.fn_name,
+                "parameters": args
             })
-
         except Exception as e:
-            print(f" General error in test {i}: {e}")
+            print(f" Error in test {i}: {e}")
 
-    with open(OUTPUT_FILE, "w") as out_f:
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as out_f:
         json.dump(results, out_f, indent=4)
     print(f"\nGeneration finished. Results in: {OUTPUT_FILE}")
 

@@ -1,7 +1,7 @@
-from pydantic import BaseModel, model_validator
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional, Any
 import numpy as np
+from pydantic import BaseModel, model_validator
 from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
 
@@ -18,158 +18,146 @@ class FunctionSchema(BaseModel):
         return self
 
 
-class VocabManager():
-    def __init__(self, path_vocabulary: str):
-        with open(path_vocabulary) as file:
-            self.vocabulary = json.load(file)
-        self.token_list = list(self.vocabulary.items())
+class VocabManager:
+    def __init__(self, path_vocabulary: str) -> None:
+        with open(path_vocabulary, encoding="utf-8") as file:
+            self.vocabulary: Dict[str, int] = json.load(file)
         self.rvocabulary = {v: k for k, v in self.vocabulary.items()}
-        self.ids_ints = []
-        self.ids_float = []
-        self.ids_booleans = []
-        self.ids_structs = []
-        self.ids_str = []
+        self.ids_ints: List[int] = []
+        self.ids_float: List[int] = []
+        self.ids_booleans: List[int] = []
+        self.ids_str: List[int] = []
         self.signals = [":", ",", '"', ' "', "{", "}"]
 
         for token, token_id in self.vocabulary.items():
-            if "\n" not in token and "Ċ" not in token and "\\n" not in token:
+            if all(x not in token for x in ["\n", "Ċ", "\\n"]):
                 self.ids_str.append(token_id)
-
             if token.lower() in ["true", "false"]:
                 self.ids_booleans.append(token_id)
-
-            clean_token = token.strip().replace(' ', '')
-            if clean_token.isdigit() or (
-                    clean_token.startswith('-') and clean_token[1:].isdigit()):
+            clean = token.strip().replace(' ', '')
+            if clean.isdigit() or (clean.startswith('-') and
+                                   clean[1:].isdigit()):
                 self.ids_ints.append(token_id)
                 self.ids_float.append(token_id)
-            elif clean_token == "." or (
-                    "." in clean_token and any(
-                        c.isdigit() for c in clean_token)):
+            elif clean == "." or ("." in clean and
+                                  any(c.isdigit() for c in clean)):
                 self.ids_float.append(token_id)
 
-            if token in self.signals:
-                self.ids_structs.append(token_id)
 
-    def get_ids_by_prefix(self, prefix: str) -> List[int]:
-        return [
-            id for token, id in self.token_list if token.startswith(prefix)]
-
-    def get_ids_from_string(self, target_text: str) -> List[int]:
-        target_id = self.vocabulary.get(target_text)
-        if target_id is not None:
-            return [target_id]
-        return [id for token, id in self.token_list if token == target_text]
-
-
-class FunctionPicker():
-    def __init__(self, json_path: str, model: llm):
-        self.list_functions = []
+class FunctionPicker:
+    def __init__(self, json_path: str, model: llm) -> None:
+        self.list_functions: List[str] = []
+        self.functions_map: Dict[str, FunctionSchema] = {}
         self.model = model
         try:
-            with open(json_path, "r") as file:
+            with open(json_path, "r", encoding="utf-8") as file:
                 data = json.load(file)
                 self.list_functions = [f["fn_name"] for f in data]
-                self.functions_map = {f["fn_name"]: FunctionSchema(**f) for f in data}
+                self.functions_map = {
+                    f["fn_name"]: FunctionSchema(**f) for f in data
+                }
         except FileNotFoundError:
             print("File don't exist")
 
-    def get_function_name(self, user_query: str) -> FunctionSchema | None:
+    def get_function_name(self, user_query: str) -> Optional[FunctionSchema]:
         prompt = (
-            f"Task: Map the query to the function name.\n"
+            f"Task: Map query to function name.\n"
             f"Functions: {self.list_functions}\n"
-            "Query: 'say hello' -> Function: fn_greet\n"
-            "Query: 'sum 2 and 2' -> Function: fn_add_numbers\n"
-            "Query: 'replace digits' -> Function: fn_substitute_string_with_regex\n"
+            "Query: 'sum 2 and 3' -> Function: fn_add_numbers\n"
+            "Query: 'is 4 even' -> Function: fn_is_even\n"
             f"Query: '{user_query}' -> Function: fn_"
         )
-
-        inputs_ids = self.model.encode(prompt)[0].tolist()
-        generated_name = "fn_"
+        ids = self.model.encode(prompt)[0].tolist()
+        gen_name = "fn_"
         for _ in range(15):
-            logits = self.model.get_logits_from_input_ids(inputs_ids)
-            next_token_id = int(np.argmax(logits))
-            inputs_ids.append(next_token_id)
-            token_str = self.model.decode([next_token_id])
-            generated_name += token_str
-            if any(c in token_str for c in ["\n", "<", " "]): break
-                
-        generated_clean = generated_name.strip().lower()
-        for fn_name in self.list_functions:
-            if fn_name.lower() in generated_clean or generated_clean in fn_name.lower():
-                return self.functions_map[fn_name]
-                
-        # FALLBACK INTELIGENTE
-        clean_query = user_query.lower()
-        stopwords = {"what", "is", "the", "of", "and", "a", "an", "to", "in", "for", "all"}
-        query_words = set(clean_query.split()) - stopwords
-        best_match, max_overlap = None, -1
-        
-        for fn_name in self.list_functions:
-            fn_words = set(fn_name.lower().replace('fn_', '').split('_'))
-            if "substitute" in fn_words: fn_words.update(["replace", "regex", "pattern"])
-            overlap = len(query_words.intersection(fn_words))
-            
-            # Penalización fuerte para matemáticas si hay palabras de texto
-            if any(w in query_words for w in ["replace", "regex", "string", "text"]):
-                if "numbers" in fn_words or "root" in fn_words: overlap -= 5
-            
+            logits = self.model.get_logits_from_input_ids(ids)
+            nt = int(np.argmax(logits))
+            ids.append(nt)
+            ts = self.model.decode([nt])
+            gen_name += ts
+            if any(c in ts for c in ["\n", "<", " "]):
+                break
+
+        res = gen_name.strip().lower()
+        for name in self.list_functions:
+            if name.lower() in res or res in name.lower():
+                return self.functions_map[name]
+
+        # Fallback robusto con sinónimos
+        q_words = set(user_query.lower().split())
+        best_match, max_overlap = None, -1.0
+        for name in self.list_functions:
+            f_w = set(name.lower().replace('fn_', '').split('_'))
+            if "add" in f_w:
+                f_w.update(["sum", "plus", "add"])
+            if "substitute" in f_w:
+                f_w.update(["replace", "regex", "vowels", "digits"])
+            if "multiply" in f_w:
+                f_w.update(["product", "times"])
+
+            overlap = float(len(q_words.intersection(f_w)))
+            if "sum" in q_words and name == "fn_add_numbers":
+                overlap += 5.0
             if overlap > max_overlap:
-                max_overlap, best_match = overlap, fn_name
+                max_overlap, best_match = overlap, name
         return self.functions_map[best_match] if best_match else None
 
-class JsonGenerator():
-    def __init__(self, schema: FunctionSchema, model: llm, vocab: VocabManager, user_query: str):
-        self.schema, self.model, self.vocab, self.user_query = schema, model, vocab, user_query
 
-    def extract_arguments(self) -> dict:
-        safe_query = self.user_query.replace('"', '\\"')
-        # FIJAMOS EL CONTEXTO CON PARENTESIS Y EJEMPLOS (FEW-SHOT)
+class JsonGenerator:
+    def __init__(self, schema: FunctionSchema, model: llm,
+                 vocab: VocabManager, query: str) -> None:
+        self.schema, self.model, self.vocab, self.query = (
+            schema, model, vocab, query)
+
+    def extract_arguments(self) -> Dict[str, Any]:
+        safe_q = self.query.replace('"', '\\"')
         context = (
-            "Task: Extract parameters from query to JSON. Parameters must be raw strings from query.\n\n"
-            "Query: 'Reverse the word apple'\n"
-            "JSON: {\"prompt\": \"Reverse the word apple\", \"name\": \"fn_reverse_string\", \"parameters\": {\"s\": \"apple\"}}\n\n"
-            "Query: 'Replace cat with dog in the cat sat'\n"
-            "JSON: {\"prompt\": \"Replace cat with dog in the cat sat\", \"name\": \"fn_substitute_string_with_regex\", \"parameters\": {\"source_string\": \"the cat sat\", \"regex\": \"cat\", \"replacement\": \"dog\"}}\n\n"
-            f"Query: '{safe_query}'\n"
-            f"JSON: {{\"prompt\": \"{safe_query}\", \"name\": \"{self.schema.fn_name}\", \"parameters\": {{"
+            "Task: Extract parameters to JSON.\n\n"
+            "Query: 'Sum 2 and 3'\n"
+            "JSON: {\"prompt\": \"Sum 2 and 3\", \"name\": "
+            "\"fn_add_numbers\", \"parameters\": {\"a\": 2.0, \"b\": 3.0}}\n\n"
+            f"Query: '{safe_q}'\nJSON: {{\"prompt\": \"{safe_q}\", "
+            f"\"name\": \"{self.schema.fn_name}\", \"parameters\": {{"
         )
-
         tokens = self.model.encode(context)[0].tolist()
-        result = {}
-        max_id = max(self.vocab.rvocabulary.keys())
-        vocab_list = [""] * (max_id + 1)
-        for t_id, t_str in self.vocab.rvocabulary.items(): vocab_list[t_id] = t_str
+        result: Dict[str, Any] = {}
+        v_list = [""] * (max(self.vocab.rvocabulary.keys()) + 1)
+        for t_id, t_str in self.vocab.rvocabulary.items():
+            v_list[t_id] = t_str
 
         for i, arg_name in enumerate(self.schema.args_names):
             arg_type = self.schema.args_types.get(arg_name, "str")
-            prefix = f'"{arg_name}": ' if i == 0 else f', "{arg_name}": '
-            if arg_type in ["string", "str"]: prefix += '"'
-            tokens.extend(self.model.encode(prefix)[0].tolist())
+            pref = f'"{arg_name}": ' if i == 0 else f', "{arg_name}": '
+            if arg_type in ["string", "str"]:
+                pref += '"'
+            tokens.extend(self.model.encode(pref)[0].tolist())
 
-            value_str, tokens_generated = "", 0
-            while tokens_generated < 30:
-                tokens_generated += 1
+            val_str, count = "", 0
+            while count < 30:
+                count += 1
                 logits = np.array(self.model.get_logits_from_input_ids(tokens))
-                for t_id in range(len(vocab_list)):
-                    txt = vocab_list[t_id].replace('Ġ', ' ')
-                    valid = True
+                for t_id in range(len(v_list)):
+                    txt = v_list[t_id].replace('Ġ', ' ')
                     if arg_type in ["number", "float", "integer", "int"]:
-                        valid = all(c in "-0123456789. " for c in txt) or txt.strip() in [",", "}"]
-                    if not valid: logits[t_id] = float("-inf")
-                
-                new_token = int(np.argmax(logits))
-                tokens.append(new_token)
-                new_text = vocab_list[new_token].replace('Ġ', ' ')
-                if arg_type in ["string", "str"]:
-                    if '"' in new_text:
-                        value_str += new_text.split('"')[0]
-                        break
-                elif "," in new_text or "}" in new_text: break
-                value_str += new_text
+                        if not (all(c in "-0123456789. " for c in txt) or
+                                txt.strip() in [",", "}"]):
+                            logits[t_id] = float("-inf")
+                nt = int(np.argmax(logits))
+                tokens.append(nt)
+                new_txt = v_list[nt].replace('Ġ', ' ')
+                if arg_type in ["string", "str"] and '"' in new_txt:
+                    val_str += new_txt.split('"')[0]
+                    break
+                if arg_type not in ["string", "str"] and any(
+                        c in new_txt for c in ",}"):
+                    break
+                val_str += new_txt
 
-            v = value_str.strip()
-            if arg_type in ["number", "float"]: result[arg_name] = float(v) if v else 0.0
-            elif arg_type in ["integer", "int"]: result[arg_name] = int(v) if v else 0
-            else: result[arg_name] = v
+            v = val_str.strip()
+            if arg_type in ["number", "float"]:
+                result[arg_name] = float(v) if v else 0.0
+            elif arg_type in ["integer", "int"]:
+                result[arg_name] = int(v) if v else 0
+            else:
+                result[arg_name] = v
         return result
