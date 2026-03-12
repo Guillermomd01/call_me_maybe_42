@@ -13,7 +13,7 @@ def main() -> None:
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    print("Cargando modelo...")
+    print("Loading model...")
     model = llm()
     vocab_path = model.get_path_to_vocab_file()
     vocab = VocabManager(vocab_path)
@@ -23,20 +23,20 @@ def main() -> None:
         with open(INPUT_FILE, "r") as f:
             tests = json.load(f)
     except Exception as e:
-        print(f"Error al leer entrada: {e}")
+        print(f"Error reading entry: {e}")
         return
 
     results = []
 
     for i, test in enumerate(tests):
         user_query = test["prompt"]
-        print(f"[{i+1}/{len(tests)}] Procesando: '{user_query}'")
+        print(f"[{i+1}/{len(tests)}] Processing: '{user_query}'")
 
         try:
             schema = picker.get_function_name(user_query)
             if not schema:
-                print("[!] No se pudo determinar"
-                      + "la función. Saltando test...")
+                print("[!] Cannot determinate function"
+                      + ". Skipping test...")
                 continue
 
             generator = JsonGenerator(schema, model, vocab, user_query)
@@ -49,11 +49,11 @@ def main() -> None:
             })
 
         except Exception as e:
-            print(f" Error general en test {i}: {e}")
+            print(f" General error in test {i}: {e}")
 
     with open(OUTPUT_FILE, "w") as out_f:
         json.dump(results, out_f, indent=4)
-    print(f"\nGeneración finalizada. Resultados en: {OUTPUT_FILE}")
+    print(f"\nGeneration finished. Results in: {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
