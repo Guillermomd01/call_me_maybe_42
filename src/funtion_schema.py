@@ -83,7 +83,6 @@ class FunctionPicker:
             if name.lower() in res or res in name.lower():
                 return self.functions_map[name]
 
-        # Fallback robusto con sinónimos
         q_words = set(user_query.lower().split())
         best_match, max_overlap = None, -1.0
         for name in self.list_functions:
