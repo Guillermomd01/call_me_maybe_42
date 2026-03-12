@@ -1,6 +1,6 @@
 import json
 import os
-from funtion_schema import VocabManager, FunctionPicker, JsonGenerator
+from src.funtion_schema import VocabManager, FunctionPicker, JsonGenerator
 from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
 
