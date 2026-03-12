@@ -6,6 +6,9 @@ from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
 
 class FunctionSchema(BaseModel):
+    """Defines the expected structure for function
+    definitions, using Pydantic to ensure the integrity
+    of data loaded from the JSON file"""
     fn_name: str
     args_names: List[str]
     args_types: Dict[str, str]
@@ -13,13 +16,23 @@ class FunctionSchema(BaseModel):
 
     @model_validator(mode='after')
     def validate_keys(self) -> 'FunctionSchema':
+        """Internal validator that runs after object
+        creation to ensure every argument listed in args_names
+        has a corresponding type defined in args_types"""
         if set(self.args_types.keys()) != set(self.args_names):
             raise ValueError("Names are not similar")
         return self
 
 
 class VocabManager:
+    """Manages the model's vocabulary and pre-classifies
+    tokens into categories (integers, floats, booleans, etc.)
+    to facilitate masking during generation."""
     def __init__(self, path_vocabulary: str) -> None:
+        """Loads the vocabulary file, reverses the mapping
+        for fast lookups, and iterates through tokens to
+        identify and group them by their nature (numeric,
+        boolean, or plain text)"""
         with open(path_vocabulary, encoding="utf-8") as file:
             self.vocabulary: Dict[str, int] = json.load(file)
         self.rvocabulary = {v: k for k, v in self.vocabulary.items()}
@@ -45,7 +58,12 @@ class VocabManager:
 
 
 class FunctionPicker:
+    """Responsible for the routing phase, determining
+    which function from the catalog best fits the user's
+    request."""
     def __init__(self, json_path: str, model: llm) -> None:
+        """Reads the function definitions file and
+        builds a schema map for later consultation."""
         self.list_functions: List[str] = []
         self.functions_map: Dict[str, FunctionSchema] = {}
         self.model = model
@@ -60,6 +78,9 @@ class FunctionPicker:
             print("File don't exist")
 
     def get_function_name(self, user_query: str) -> Optional[FunctionSchema]:
+        """Performs an initial inference with the model to predict the
+        function name and applies a keyword-based fallback system to
+        improve reliability in small models."""
         prompt = (
             f"Task: Map query to function name.\n"
             f"Functions: {self.list_functions}\n"
@@ -103,12 +124,20 @@ class FunctionPicker:
 
 
 class JsonGenerator:
+    """Core engine for constrained decoding that
+    extracts parameters from the user query in a structured format."""
     def __init__(self, schema: FunctionSchema, model: llm,
                  vocab: VocabManager, query: str) -> None:
+        """Sets up the generation session with the target
+        function schema, the model to be used, and the original query."""
         self.schema, self.model, self.vocab, self.query = (
             schema, model, vocab, query)
 
     def extract_arguments(self) -> Dict[str, Any]:
+        """Implements the token-by-token generation loop,
+        injecting the JSON structure and applying Logit Masking
+        to the model's logits to prohibit tokens that do not match
+        the expected data type."""
         safe_q = self.query.replace('"', '\\"')
         context = (
             "Task: Extract parameters to JSON.\n\n"

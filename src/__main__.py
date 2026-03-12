@@ -6,6 +6,9 @@ from llm_sdk.llm_sdk import Small_LLM_Model as llm
 
 
 def main() -> None:
+    """Acts as the program orchestrator, managing resource
+    loading, iterating through test cases, and coordinating
+    the final output into the results JSON file."""
     INPUT_FILE = "data/input/function_calling_tests.json"
     OUTPUT_FILE = "data/output/function_calling_results.json"
     FUNCTIONS_DEF = "data/input/function_definitions.json"
